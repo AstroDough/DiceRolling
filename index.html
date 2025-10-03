@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yahtzee Multiplayer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // Initialize Firebase
+    const firebaseConfig = {
+      apiKey: "AIzaSyCUyJejB7mdI8rGLf_gYXHSZg7yBP9tnvU",
+      authDomain: "yahtzee-f4a0c.firebaseapp.com",
+      databaseURL: "https://yahtzee-f4a0c-default-rtdb.firebaseio.com",
+      projectId: "yahtzee-f4a0c",
+      storageBucket: "yahtzee-f4a0c.firebasestorage.app",
+      messagingSenderId: "364630156499",
+      appId: "1:364630156499:web:d55ca54578f23395106026"
+    };
+
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+    const database = firebase.database();
+
+    const CATEGORIES = [
+      { id: 'ones', name: 'Ones', upper: true },
+      { id: 'twos', name: 'Twos', upper: true },
+      { id: 'threes', name: 'Threes', upper: true },
+      { id: 'fours', name: 'Fours', upper: true },
+      { id: 'fives', name: 'Fives', upper: true },
+      { id: 'sixes', name: 'Sixes', upper: true },
+      { id: 'threeOfKind', name: 'Three of a Kind', upper: false },
+      { id: 'fourOfKind', name: 'Four of a Kind', upper: false },
+      { id: 'fullHouse', name: 'Full House', upper: false },
+      { id: 'smallStraight', name: 'Small Straight', upper: false },
+      { id: 'largeStraight', name: 'Large Straight', upper: false },
+      { id: 'yahtzee', name: 'Yahtzee', upper: false },
+      { id: 'chance', name: 'Chance', upper: false }
+    ];
+
+    const THEMES = {
+      purple: 'from-indigo-600 via-purple-600 to-pink-600',
+      ocean: 'from-blue-600 via-cyan-600 to-teal-600',
+      sunset: 'from-orange-600 via-red-600 to-pink-600',
+      forest: 'from-green-600 via-emerald-600 to-teal-600',
+    };
+
+    function YahtzeeGame() {
+      const [gameMode, setGameMode] = useState('menu');
+      const [roomCode, setRoomCode] = useState('');
+      const [roomCodeInput, setRoomCodeInput] = useState('');
+      const [username, setUsername] = useState('');
+      const [myPlayerId, setMyPlayerId] = useState('');
+      const [roomData, setRoomData] = useState(null);
+      const [copied, setCopied] = useState(false);
+      const [darkMode, setDarkMode] = useState(true);
+      const [currentTheme] = useState('purple');
+      const [soundEnabled, setSoundEnabled] = useState(true);
+
+      const generateRoomCode = () => Math.random().toString(36).substring(2, 8).toUpperCase();
+      const generatePlayerId = () => Date.now().toString(36) + Math.random().toString(36).substring(2);
+
+      const createRoom = () => {
+        if (!username.trim()) return;
+        const code = generateRoomCode();
+        const playerId = generatePlayerId();
+        
+        database.ref(`rooms/${code}`).set({
+          hostId: playerId,
+          currentPlayerIndex: 0,
+          dice: [1, 1, 1, 1, 1],
+          locked: [false, false, false, false, false],
+          rollsLeft: 3,
+          isRolling: false,
+          gameStarted: false,
+          players: {
+            [playerId]: { name: username, order: 0, scores: {} }
+          }
+        });
+        
+        setRoomCode(code);
+        setMyPlayerId(playerId);
+        setGameMode('lobby');
+      };
+
+      const joinRoom = async () => {
+        if (!username.trim() || !roomCodeInput.trim()) return;
+        const code = roomCodeInput.toUpperCase();
+        const snapshot = await database.ref(`rooms/${code}`).once('value');
+        
+        if (!snapshot.exists()) {
+          alert('Room not found!');
+          return;
+        }
+        
+        const roomData = snapshot.val();
+        if (roomData.gameStarted) {
+          alert('Game already in progress!');
+          return;
+        }
+        
+        const playerId = generatePlayerId();
+        const playerCount = Object.keys(roomData.players || {}).length;
+        
+        database.ref(`rooms/${code}/players/${playerId}`).set({
+          name: username,
+          order: playerCount,
+          scores: {}
+        });
+        
+        setRoomCode(code);
+        setMyPlayerId(playerId);
+        setGameMode('lobby');
+      };
+
+      useEffect(() => {
+        if (!roomCode) return;
+        const roomRef = database.ref(`rooms/${roomCode}`);
+        const listener = roomRef.on('value', (snapshot) => {
+          const data = snapshot.val();
+          if (data) {
+            setRoomData(data);
+            if (data.gameStarted && gameMode !== 'playing') {
+              setGameMode('playing');
+            }
+          }
+        });
+        return () => roomRef.off('value', listener);
+      }, [roomCode]);
+
+      const startGame = () => {
+        if (!roomData || Object.keys(roomData.players).length < 2) {
+          alert('Need at least 2 players!');
+          return;
+        }
+        database.ref(`rooms/${roomCode}`).update({ gameStarted: true });
+      };
+
+      const playSound = (type) => {
+        if (!soundEnabled) return;
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        if (type === 'roll') {
+          osc.frequency.value = 200;
+          gain.gain.setValueAtTime(0.3, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 0.3);
+        }
+      };
+
+      const isMyTurn = () => {
+        if (!roomData?.players) return false;
+        const playerIds = Object.keys(roomData.players).sort((a, b) => 
+          roomData.players[a].order - roomData.players[b].order
+        );
+        return playerIds[roomData.currentPlayerIndex] === myPlayerId;
+      };
+
+      const rollDice = () => {
+        if (!isMyTurn() || roomData.rollsLeft === 0 || roomData.isRolling) return;
+        playSound('roll');
+        
+        const newDice = roomData.dice.map((die, i) => 
+          roomData.locked[i] ? die : Math.floor(Math.random() * 6) + 1
+        );
+        
+        database.ref(`rooms/${roomCode}`).update({
+          dice: newDice,
+          rollsLeft: roomData.rollsLeft - 1,
+          isRolling: true
+        });
+        
+        setTimeout(() => {
+          database.ref(`rooms/${roomCode}`).update({ isRolling: false });
+        }, 650);
+      };
+
+      const toggleLock = (index) => {
+        if (!isMyTurn() || roomData.rollsLeft === 3 || roomData.isRolling) return;
+        const newLocked = [...roomData.locked];
+        newLocked[index] = !newLocked[index];
+        database.ref(`rooms/${roomCode}`).update({ locked: newLocked });
+      };
+
+      const calculateScore = (category, diceVals) => {
+        const counts = diceVals.reduce((acc, val) => {
+          acc[val] = (acc[val] || 0) + 1;
+          return acc;
+        }, {});
+        const values = Object.values(counts);
+        const sum = diceVals.reduce((a, b) => a + b, 0);
+
+        switch (category) {
+          case 'ones': return diceVals.filter(d => d === 1).length;
+          case 'twos': return diceVals.filter(d => d === 2).length * 2;
+          case 'threes': return diceVals.filter(d => d === 3).length * 3;
+          case 'fours': return diceVals.filter(d => d === 4).length * 4;
+          case 'fives': return diceVals.filter(d => d === 5).length * 5;
+          case 'sixes': return diceVals.filter(d => d === 6).length * 6;
+          case 'threeOfKind': return values.some(c => c >= 3) ? sum : 0;
+          case 'fourOfKind': return values.some(c => c >= 4) ? sum : 0;
+          case 'fullHouse': return values.includes(3) && values.includes(2) ? 25 : 0;
+          case 'smallStraight': {
+            const sorted = [...new Set(diceVals)].sort();
+            return ['1234', '2345', '3456'].some(s => sorted.join('').includes(s)) ? 30 : 0;
+          }
+          case 'largeStraight': {
+            const sorted = [...diceVals].sort().join('');
+            return ['12345', '23456'].includes(sorted) ? 40 : 0;
+          }
+          case 'yahtzee': return values.includes(5) ? 50 : 0;
+          case 'chance': return sum;
+          default: return 0;
+        }
+      };
+
+      const scoreCategory = (category) => {
+        if (!isMyTurn() || roomData.rollsLeft === 3 || roomData.isRolling) return;
+        
+        const playerIds = Object.keys(roomData.players).sort((a, b) => 
+          roomData.players[a].order - roomData.players[b].order
+        );
+        const currentPlayerId = playerIds[roomData.currentPlayerIndex];
+        const currentPlayer = roomData.players[currentPlayerId];
+        
+        if (currentPlayer.scores?.[category] !== undefined) return;
+        
+        const score = calculateScore(category, roomData.dice);
+        const nextIndex = (roomData.currentPlayerIndex + 1) % playerIds.length;
+        
+        database.ref(`rooms/${roomCode}`).update({
+          [`players/${currentPlayerId}/scores/${category}`]: score,
+          currentPlayerIndex: nextIndex,
+          dice: [1, 1, 1, 1, 1],
+          locked: [false, false, false, false, false],
+          rollsLeft: 3
+        });
+      };
+
+      const getPlayerTotal = (playerId) => {
+        if (!roomData?.players[playerId]) return 0;
+        const playerScores = roomData.players[playerId].scores || {};
+        const upperScore = CATEGORIES.filter(c => c.upper).reduce((sum, c) => 
+          sum + (playerScores[c.id] || 0), 0
+        );
+        const bonus = upperScore >= 63 ? 35 : 0;
+        const lowerScore = CATEGORIES.filter(c => !c.upper).reduce((sum, c) => 
+          sum + (playerScores[c.id] || 0), 0
+        );
+        return upperScore + bonus + lowerScore;
+      };
+
+      const copyRoomCode = () => {
+        navigator.clipboard.writeText(roomCode);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      };
+
+      if (gameMode === 'menu') {
+        return (
+          <div className={`min-h-screen bg-gradient-to-br ${THEMES[currentTheme]} flex items-center justify-center p-4`}>
+            <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-3xl shadow-2xl p-12 max-w-md w-full`}>
+              <div className="text-center mb-8">
+                <div className="text-6xl mb-4">🎲</div>
+                <h1 className={`text-4xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'} mb-2`}>Yahtzee!</h1>
+                <p className={darkMode ? 'text-gray-300' : 'text-gray-600'}>Multiplayer Online</p>
+              </div>
+              <div className="space-y-4">
+                <button
+                  onClick={() => setGameMode('create')}
+                  className="w-full bg-gradient-to-br from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white py-6 px-4 rounded-2xl font-bold text-2xl transition-all transform hover:scale-105 shadow-lg"
+                >
+                  🎮 Create Room
+                </button>
+                <button
+                  onClick={() => setGameMode('join')}
+                  className="w-full bg-gradient-to-br from-green-500 to-teal-600 hover:from-green-600 hover:to-teal-700 text-white py-6 px-4 rounded-2xl font-bold text-2xl transition-all transform hover:scale-105 shadow-lg"
+                >
+                  🚪 Join Room
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (gameMode === 'create') {
+        return (
+          <div className={`min-h-screen bg-gradient-to-br ${THEMES[currentTheme]} flex items-center justify-center p-4`}>
+            <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-3xl shadow-2xl p-12 max-w-md w-full`}>
+              <h2 className={`text-3xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'} mb-6 text-center`}>Create Room</h2>
+              <input
+                type="text"
+                placeholder="Enter your name"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className={`w-full px-4 py-3 border-2 rounded-xl focus:outline-none text-lg mb-4 ${
+                  darkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-gray-300'
+                }`}
+              />
+              <button
+                onClick={createRoom}
+                disabled={!username.trim()}
+                className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 disabled:from-gray-400 disabled:to-gray-500 text-white py-4 rounded-2xl font-bold text-xl mb-4"
+              >
+                Create Room
+              </button>
+              <button
+                onClick={() => setGameMode('menu')}
+                className={`w-full ${darkMode ? 'bg-gray-700' : 'bg-gray-200'} py-3 rounded-xl font-semibold`}
+              >
+                Back
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (gameMode === 'join') {
+        return (
+          <div className={`min-h-screen bg-gradient-to-br ${THEMES[currentTheme]} flex items-center justify-center p-4`}>
+            <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-3xl shadow-2xl p-12 max-w-md w-full`}>
+              <h2 className={`text-3xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'} mb-6 text-center`}>Join Room</h2>
+              <input
+                type="text"
+                placeholder="Enter your name"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className={`w-full px-4 py-3 border-2 rounded-xl focus:outline-none text-lg mb-4 ${
+                  darkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-gray-300'
+                }`}
+              />
+              <input
+                type="text"
+                placeholder="Enter room code"
+                value={roomCodeInput}
+                onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())}
+                className={`w-full px-4 py-3 border-2 rounded-xl focus:outline-none text-lg mb-4 ${
+                  darkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-gray-300'
+                }`}
+              />
+              <button
+                onClick={joinRoom}
+                disabled={!username.trim() || !roomCodeInput.trim()}
+                className="w-full bg-gradient-to-r from-green-500 to-teal-600 hover:from-green-600 hover:to-teal-700 disabled:from-gray-400 disabled:to-gray-500 text-white py-4 rounded-2xl font-bold text-xl mb-4"
+              >
+                Join Room
+              </button>
+              <button
+                onClick={() => setGameMode('menu')}
+                className={`w-full ${darkMode ? 'bg-gray-700' : 'bg-gray-200'} py-3 rounded-xl font-semibold`}
+              >
+                Back
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (gameMode === 'lobby') {
+        const players = roomData ? Object.entries(roomData.players).sort(([, a], [, b]) => a.order - b.order) : [];
+        const isHost = roomData?.hostId === myPlayerId;
+
+        return (
+          <div className={`min-h-screen bg-gradient-to-br ${THEMES[currentTheme]} flex items-center justify-center p-4`}>
+            <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-3xl shadow-2xl p-12 max-w-2xl w-full`}>
+              <h2 className={`text-3xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'} mb-6 text-center`}>Game Lobby</h2>
+              
+              <div className={`${darkMode ? 'bg-gray-700' : 'bg-gray-100'} rounded-xl p-6 mb-6`}>
+                <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'} mb-2 text-center`}>Room Code</p>
+                <div className="flex items-center justify-center gap-3">
+                  <p className={`text-4xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'} tracking-wider`}>{roomCode}</p>
+                  <button
+                    onClick={copyRoomCode}
+                    className={`${darkMode ? 'bg-gray-600' : 'bg-gray-200'} p-3 rounded-lg`}
+                  >
+                    {copied ? '✓' : '📋'}
+                  </button>
+                </div>
+              </div>
+
+              <div className={`${darkMode ? 'bg-gray-700' : 'bg-gray-100'} rounded-xl p-6 mb-6`}>
+                <h3 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'} mb-4`}>Players ({players.length})</h3>
+                <div className="space-y-2">
+                  {players.map(([id, player]) => (
+                    <div key={id} className={`${darkMode ? 'bg-gray-600' : 'bg-white'} rounded-lg p-3 flex items-center justify-between`}>
+                      <span className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-800'}`}>{player.name}</span>
+                      {id === roomData?.hostId && (
+                        <span className="bg-yellow-400 text-yellow-900 px-3 py-1 rounded-full text-xs font-bold">HOST</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {isHost ? (
+                <button
+                  onClick={startGame}
+                  disabled={players.length < 2}
+                  className="w-full bg-gradient-to-r from-green-500 to-teal-600 hover:from-green-600 hover:to-teal-700 disabled:from-gray-400 disabled:to-gray-500 text-white py-4 rounded-2xl font-bold text-xl"
+                >
+                  {players.length < 2 ? 'Waiting for players...' : 'Start Game'}
+                </button>
+              ) : (
+                <div className={`text-center ${darkMode ? 'text-gray-300' : 'text-gray-600'} py-4`}>
+                  Waiting for host to start the game...
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      if (gameMode === 'playing' && roomData) {
+        const players = Object.entries(roomData.players).sort(([, a], [, b]) => a.order - b.order);
+        const playerIds = players.map(([id]) => id);
+        const currentPlayerId = playerIds[roomData.currentPlayerIndex];
+        const currentPlayer = roomData.players[currentPlayerId];
+
+        return (
+          <div className={`min-h-screen bg-gradient-to-br ${THEMES[currentTheme]} p-4`}>
+            <div className="max-w-7xl mx-auto">
+              <div className="text-center mb-6">
+                <h1 className="text-5xl font-bold text-white mb-4">🎲 Yahtzee 🎲</h1>
+                <div className={`${darkMode ? 'bg-gray-800/90' : 'bg-white/90'} backdrop-blur rounded-2xl px-6 py-3 inline-block`}>
+                  <p className="text-2xl font-bold text-indigo-400">
+                    {currentPlayer?.name}'s Turn {isMyTurn() && '(You!)'}
+                  </p>
+                  <p className="text-gray-300">Rolls Left: {roomData.rollsLeft}</p>
+                </div>
+              </div>
+
+              <div className="bg-gray-800/95 backdrop-blur rounded-3xl shadow-2xl p-8 mb-6">
+                <div className="flex justify-center gap-4 mb-6">
+                  {roomData.dice.map((value, i) => (
+                    <div
+                      key={i}
+                      onClick={() => toggleLock(i)}
+                      className={`w-20 h-20 rounded-xl flex items-center justify-center text-4xl cursor-pointer transition-all ${
+                        roomData.locked[i] ? 'bg-emerald-500' : 'bg-white'
+                      }`}
+                    >
+                      {value}
+                    </div>
+                  ))}
+                </div>
+                <div className="text-center">
+                  <button
+                    onClick={rollDice}
+                    disabled={roomData.rollsLeft === 0 || roomData.isRolling || !isMyTurn()}
+                    className="bg-gradient-to-r from-emerald-500 to-teal-600 disabled:from-gray-400 disabled:to-gray-500 text-white px-12 py-4 rounded-2xl font-bold text-xl"
+                  >
+                    {roomData.isRolling ? '🎲 Rolling...' : !isMyTurn() ? '⏳ Wait Your Turn' : '🎲 Roll Dice'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid gap-6" style={{ gridTemplateColumns: `repeat(${players.length}, 1fr)` }}>
+                {players.map(([playerId, player]) => (
+                  <div key={playerId} className={`bg-gray-800/95 backdrop-blur rounded-2xl shadow-xl overflow-hidden ${isMyTurn() && playerId === myPlayerId ? 'ring-4 ring-yellow-400' : ''}`}>
+                    <div className="bg-gradient-to-r from-gray-700 to-gray-800 text-white p-4 text-center">
+                      <h3 className="font-bold text-2xl mb-1">{player.name} {playerId === myPlayerId && '(You)'}</h3>
+                      <p className="text-lg">Total: {getPlayerTotal(playerId)}</p>
+                    </div>
+                    <div className="p-4">
+                      {CATEGORIES.map(category => {
+                        const scored = player.scores?.[category.id] !== undefined;
+                        const canScore = !scored && playerId === myPlayerId && isMyTurn() && roomData.rollsLeft < 3;
+                        const potentialScore = canScore ? calculateScore(category.id, roomData.dice) : 0;
+
+                        return (
+                          <div
+                            key={category.id}
+                            onClick={() => canScore && scoreCategory(category.id)}
+                            className={`flex justify-between items-center py-3 px-4 mb-1 rounded-lg ${
+                              scored ? 'bg-gray-700' : 'bg-gray-800'
+                            } ${canScore ? 'cursor-pointer hover:ring-2 hover:ring-gray-400' : ''}`}
+                          >
+                            <span className="font-semibold text-gray-200">{category.name}</span>
+                            <span className="font-bold text-xl text-indigo-400">
+                              {scored ? player.scores[category.id] : canScore ? `(${potentialScore})` : '-'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return null;
+    }
+
+    ReactDOM.render(<YahtzeeGame />, document.getElementById('root'));
+  </script>
+</body>
+</html>
